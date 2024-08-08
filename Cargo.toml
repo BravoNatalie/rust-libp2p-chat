@@ -1,0 +1,15 @@
+[package]
+name = "rust-libp2p-chat"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+  libp2p = { version = "0.53.2", features = ["tokio","gossipsub", "mdns","tcp", "tls", "dns", "async-std", "noise", "yamux", "websocket", "ping", "macros", "quic", "relay", "request-response", "identify", "ed25519"] }
+  tokio = { version = "1.39.2", features = ["full"] }
+  clap = {version="4.5.13", features = ["derive", "env"]}
+  futures = "0.3.30"
+  futures-timer = "3.0.3"
+  log = "0.4.22"
+  env_logger = "0.11.5"
+  async-trait = "0.1.81"
+  anyhow = "1.0.86"
