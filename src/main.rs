@@ -1,20 +1,20 @@
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use futures::StreamExt;
 use anyhow::{Context, Result};
 use log::{debug, error, info, warn};
 use tokio::{fs, io, io::AsyncBufReadExt, select};
 use std::{
-    collections::hash_map::DefaultHasher, error::Error, hash::{Hash, Hasher}, iter, net::{IpAddr, Ipv4Addr}, path::Path, time::Duration
+    collections::hash_map::DefaultHasher, error::Error, hash::{Hash, Hasher}, net::IpAddr, path::Path, time::Duration
 };
 use libp2p::{
-    gossipsub, identify, identity::{self, Keypair}, mdns, noise, swarm::{NetworkBehaviour, SwarmEvent}, tcp, yamux,  multiaddr::{Multiaddr, Protocol}, PeerId, Swarm, SwarmBuilder
+    gossipsub, identify, identity, mdns, noise, swarm::{NetworkBehaviour, SwarmEvent}, tcp, yamux,  multiaddr::{Multiaddr, Protocol}, PeerId, Swarm, SwarmBuilder
 };
 
+// - Port 0 uses a port assigned by the OS.
 const PORT_TPC: u16 = 0;
 const PORT_QUIC: u16 = 0; //9091;
 const LOCAL_KEY_PATH: &str = "./local_key";
-const GOSSIPSUB_CHAT_TOPIC: &str = "local-net";
-const LISTEN_ADDRESS: IpAddr = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0));
+const GOSSIPSUB_CHAT_TOPIC: &str = "chat";
 
 #[derive(NetworkBehaviour)]
 struct Behaviour {
@@ -23,15 +23,37 @@ struct Behaviour {
     mdns: mdns::tokio::Behaviour,
 }
 
+#[derive(Parser, Debug)]
+#[clap(name = "decentralized chat peer")]
+struct Args {
+    /// Address to listen on.
+    #[clap(long, default_value = "0.0.0.0")]
+    listen_address: IpAddr,
+
+    /// From where to get the identity keypair
+    #[clap(value_enum, default_value_t = KeypairOpt::GENERATE )]
+    keypair: KeypairOpt
+}
+
+/// Keypair options
+#[derive(ValueEnum, Debug, Clone)]
+enum KeypairOpt {
+    /// Generate and save the keypair into ./local_key file
+    GENERATE,
+    
+    /// Read keypair from ./local_key file
+    FILE,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
-    // TODO: parse cli options using clap
+    let args = Args::parse();
 
-    let local_key = read_or_create_identity(Path::new(LOCAL_KEY_PATH))
+    let local_key = read_or_create_identity(args.keypair)
         .await
-        .context("Failed to read identity")?;
+        .context("Failed to get identity")?;
 
 
     let mut swarm = create_swarm(local_key)?;
@@ -42,11 +64,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     swarm.behaviour_mut().gossipsub.subscribe(&chat_topic)?;
 
    
-    let address_quic = Multiaddr::from(LISTEN_ADDRESS)
+    let address_quic = Multiaddr::from(args.listen_address)
     .with(Protocol::Udp(PORT_QUIC))
     .with(Protocol::QuicV1);
 
-    let address_tcp = Multiaddr::from(LISTEN_ADDRESS)
+    let address_tcp = Multiaddr::from(args.listen_address)
     .with(Protocol::Tcp(PORT_TPC));
 
     // tell the swarm to Listen on all interfaces and whatever port the OS assigns
@@ -193,15 +215,8 @@ fn create_swarm(local_key: identity::Keypair) -> Result<Swarm<Behaviour>> {
     )
 }
 
-async fn read_or_create_identity(path: &Path) -> Result<identity::Keypair> {
-    if path.exists() {
-        let bytes = fs::read(&path).await?;
-
-        info!("Using existing identity from {}", path.display());
-
-        return Ok(identity::Keypair::from_protobuf_encoding(&bytes)?); // This only works for ed25519 but that is what we are using.
-    }
-
+async fn generate_and_save_identity(path: &Path ) -> Result<identity::Keypair> {
+   
     let identity = identity::Keypair::generate_ed25519();
 
     fs::write(&path, &identity.to_protobuf_encoding()?).await?;
@@ -209,4 +224,22 @@ async fn read_or_create_identity(path: &Path) -> Result<identity::Keypair> {
     info!("Generated new identity and wrote it to {}", path.display());
 
     Ok(identity)
+}
+
+async fn read_or_create_identity(keypair: KeypairOpt) -> Result<identity::Keypair> {
+    let path: &Path = Path::new(LOCAL_KEY_PATH);
+
+    match  keypair {
+        KeypairOpt::GENERATE =>  generate_and_save_identity(path).await,
+        KeypairOpt::FILE => {
+            if path.exists() {
+                let bytes = fs::read(&path).await?;
+        
+                info!("Using existing identity from {}", path.display());
+        
+                return Ok(identity::Keypair::from_protobuf_encoding(&bytes)?); // This only works for ed25519 but that is what we are using.
+            }
+            generate_and_save_identity(path).await
+        }
+    }
 }
