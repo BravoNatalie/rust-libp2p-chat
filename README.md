@@ -21,3 +21,6 @@ A peer-to-peer decentralized chat app built with Rust and libp2p. It utilizes th
 4. Close the app with `Ctrl-C`. You can add more peers by opening additional terminal windows and running the same command.
 
 When a new peer is found using mDNS, it can join the chat, and all other peers will receive its messages. If a participant leaves the app, the remaining peers will recognize the departure through an mDNS expiration event and update their list by removing the peer.
+
+## :framed_picture: Preview
+![chat print](image.png)

@@ -32,7 +32,11 @@ struct Args {
 
     /// From where to get the identity keypair
     #[clap(value_enum, default_value_t = KeypairOpt::GENERATE )]
-    keypair: KeypairOpt
+    keypair: KeypairOpt,
+
+    /// Nodes to connect to on startup.
+    #[clap(long)]
+    connect: Option<Vec<Multiaddr>>,
 }
 
 /// Keypair options
@@ -58,12 +62,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let mut swarm = create_swarm(local_key)?;
 
-     // Create a Gossipsub topic
+    // Create a Gossipsub topic
     let chat_topic = gossipsub::IdentTopic::new(GOSSIPSUB_CHAT_TOPIC);
     // Subscribe to the Gossipsub topic
     swarm.behaviour_mut().gossipsub.subscribe(&chat_topic)?;
 
-   
     let address_quic = Multiaddr::from(args.listen_address)
     .with(Protocol::Udp(PORT_QUIC))
     .with(Protocol::QuicV1);
@@ -72,23 +75,24 @@ async fn main() -> Result<(), Box<dyn Error>> {
     .with(Protocol::Tcp(PORT_TPC));
 
     // tell the swarm to Listen on all interfaces and whatever port the OS assigns
-    // swarm.listen_on("/ip4/0.0.0.0/udp/0/quic-v1".parse()?)?;
-    swarm.listen_on(address_tcp).expect("listen on tcp");
-    // swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
-    swarm.listen_on(address_quic).expect("listen on quic");
+    //"/ip4/0.0.0.0/udp/0/quic-v1"
+    swarm.listen_on(address_tcp.clone()).expect("listen on tcp");
+    //"/ip4/0.0.0.0/tcp/0"
+    swarm.listen_on(address_quic.clone()).expect("listen on quic");
+
+    // Dial the peers identified by the multi-address given as argument
+    if let Some(addrs) = args.connect {
+        for addr in addrs {
+            info!("Dialing {addr}...");
+            if let Err(e) = swarm.dial(addr.clone()) {
+                error!("Failed to dial {addr}: {e}");
+            }
+        }
+    }
 
     // Read full lines from stdin
     let mut stdin = io::BufReader::new(io::stdin()).lines();
-    println!("Enter messages via STDIN and they will be sent to connected peers using Gossipsub");
-
-    // Dial the peer identified by the multi-address given as the second
-    // command-line argument, if any.
-    if let Some(addr) = std::env::args().nth(1) {
-        let remote: Multiaddr = addr.parse()?;
-        swarm.dial(remote)?;
-        println!("Dialed {addr}")
-    }
-
+ 
     // Kick it off
     loop {
         select! {
@@ -96,19 +100,30 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 if let Err(e) = swarm
                     .behaviour_mut().gossipsub
                     .publish(chat_topic.clone(), line.as_bytes()) {
-                    println!("Publish error: {e:?}");
+                    error!("Publish error: {e:?}");
                 }
             }
             event = swarm.select_next_some() => match event {
+                SwarmEvent::NewListenAddr { address, .. } => {
+                    info!("Local node is listening on {address}");
+                },
+                // Prints peer id identify info is being sent to.
+                SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Sent { peer_id, .. })) => {
+                    info!("Sent identify info to {peer_id:?}")
+                }
+                // Prints out the info received via the identify event
+                SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Received { info, .. })) => {
+                    info!("Received {info:?}")
+                },
                 SwarmEvent::Behaviour(BehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
                     for (peer_id, _multiaddr) in list {
-                        println!("mDNS discovered a new peer: {peer_id}");
+                        info!("mDNS discovered a new peer: {peer_id}");
                         swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
                     }
                 },
                 SwarmEvent::Behaviour(BehaviourEvent::Mdns(mdns::Event::Expired(list))) => {
                     for (peer_id, _multiaddr) in list {
-                        println!("mDNS discover peer has expired: {peer_id}");
+                        info!("mDNS discover peer has expired: {peer_id}");
                         swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer_id);
                     }
                 },
@@ -116,20 +131,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     propagation_source: peer_id,
                     message_id: id,
                     message,
-                })) => println!(
+                })) => info!(
                         "Got message: '{}' with id: {id} from peer: {peer_id}",
                         String::from_utf8_lossy(&message.data),
                     ),
-                 // Prints peer id identify info is being sent to.
-                SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Sent { peer_id, .. })) => {
-                    println!("Sent identify info to {peer_id:?}")
-                }
-                // Prints out the info received via the identify event
-                SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Received { info, .. })) => {
-                    println!("Received {info:?}")
-                },
-                SwarmEvent::NewListenAddr { address, .. } => {
-                    println!("Local node is listening on {address}");
+                SwarmEvent::Behaviour(BehaviourEvent::Gossipsub(gossipsub::Event::Subscribed { peer_id, topic })) => {
+                    debug!("{peer_id} subscribed to {topic}");
                 }
                 _ => {}
             }
